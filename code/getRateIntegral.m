@@ -1,0 +1,24 @@
+function integ = getRateIntegral(curve, t)
+    % getRateIntegral: Compute the integral of the local rate function from 0 to t
+    %
+    % Inputs:
+    % curve: pre-computed data about an interest rate curve
+    % t: time
+    %
+    % Output:
+    % integ: integral of the local rate function from 0 to t
+
+    % Find the interval in which t falls
+    index = find(curve.ts >= t, 1);
+    
+    % If t is before the first tenor, use the first rate
+    if index == 1
+        integ = curve.rates(1) * t;
+    % If t is after the last tenor, use the last rate
+    elseif t > curve.ts(end)
+        integ = curve.rates(end) * (t - curve.ts(end)) + sum(diff([0; curve.ts]) .* curve.rates);
+    % Otherwise, sum up to the tenor before t and add the last bit
+    else
+        integ = sum(diff([0; curve.ts(1:index-1)]) .* curve.rates(1:index-1)) + (t - curve.ts(index-1)) * curve.rates(index);
+    end
+end
