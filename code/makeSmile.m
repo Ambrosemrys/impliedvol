@@ -1,65 +1,77 @@
-function curve = makeSmile(fwdCurve, T, cps, deltas, vols)
-    % makeSmile: Pre-computes all data necessary for the smile interpolation
-    %
-    % Inputs:
-    % fwdCurve: forward curve data
-    % T: time to expiry of the option
-    % cps: vector if 1 for call, -1 for put
-    % deltas: vector of delta in absolute value (e.g., 0.25)
-    % vols: vector of volatilities
-    %
-    % Output:
-    % curve: a struct containing data needed in getSmileVol
+% Inputs :
+%    fwdCurve : forward curve data
+%    T: time to expiry of the option
+%    cps: vetor if 1 for call , -1 for put
+%    deltas : vector of delta in absolute value (e.g. 0.25)
+%    vols : vector of volatilities
+% Output :
+%    curve : a struct containing data needed in getSmileK
+function [curve]=makeSmile(fwdCurve, T, cps, deltas, vols)
+    % Hints :
+    % 1. assert vector dimension match
+    % 2. resolve strikes using deltaToStrikes
+    % 3. check arbitrages
+    % 4. compute spline coefficients
+    % 5. compute parameters aL , bL , aR and bR
 
-    % Assert vector dimension match
+
+    % Ensure all input vectors have the same length
+    arguments
+
+        fwdCurve (1,1) struct
+        T (1,1) double {mustBeGreaterThanOrEqual(T,0)}
+        cps (:,1) double {mustBeMember(cps, [-1, 1])} 
+        deltas (:,1) double {mustBeGreaterThanOrEqual(deltas,0), mustBeLessThanOrEqual(deltas,1)} 
+        vols (:,1) double {mustBeGreaterThanOrEqual(vols,0)} 
+ 
+    end
+
     assert(length(cps) == length(deltas) && length(deltas) == length(vols), ...
-        'Input vectors must have the same length.');
+           'ErrorId:vectorLengthMismatch','Error: All input vectors must have the same length.');
 
-    % Resolve strikes using getStrikeFromDelta
-    Ks = arrayfun(@(cp, delta, vol) getStrikeFromDelta(fwdCurve.spot, T, cp, vol, delta), ...
-                  cps, deltas, vols);
 
-    % Check for arbitrages and add a dummy strike at the beginning
-    Ks = [0, Ks];
-    vols = [vols(1), vols]; % Assume same volatility for the dummy strike
+    fwdSpot = getFwdSpot(fwdCurve, T);
+    strikes = arrayfun(@(cp, vol, delta) getStrikeFromDelta(fwdSpot, T, cp, vol, delta), cps, vols, deltas);
+    
+    calls = getBlackCall(fwdSpot, T, [0; strikes], [0; vols]); 
+    checkConvexArbitrage(calls, [0; strikes]);
 
-    % Calculate call prices for arbitrage check
-    Cs = arrayfun(@(K, vol) getBlackCall(fwdCurve.spot, T, K, vol), Ks, vols);
+    pp = csape(strikes, vols,'variational');
+    pp_der = fnder(pp);
 
-    % Check for monotonicity
-    assert(all(diff(Cs) <= 0), 'Arbitrage detected: Call prices not monotonically decreasing.');
+    sigma_prime_K1 = ppval(pp_der, strikes(1));
+    sigma_prime_KN = ppval(pp_der, strikes(end));
+    
+    KL = strikes(1)^2 / strikes(2);
+    KR = strikes(end)^2 / strikes(end-1);
 
-    % Check for convexity
-    assert(all(diff(Cs, 2) >= 0), 'Arbitrage detected: Call price curve not convex.');
+    bL = atanh(sqrt(0.5)) / (strikes(1) - KL); 
+    bR = atanh(sqrt(0.5)) / (KR - strikes(end)); 
+    aR = sigma_prime_KN / bR;
+    aL = -sigma_prime_K1 / bL;
 
-    % Remove the dummy strike added for arbitrage checking
-    Ks(1) = [];
-    vols(1) = [];
-
-    % Compute spline coefficients using the 'spline' MATLAB function
-    pp = spline(Ks, vols);
-
-    % Compute the slopes of the spline at the endpoints
-    spline_slope_left = pp.coefs(1, 3);
-    spline_slope_right = pp.coefs(end, 3);
-
-    % Compute parameters aL, bL, aR, bR
-    KL = Ks(1) * Ks(1) / Ks(2);
-    KR = Ks(end) * Ks(end) / Ks(end - 1);
-
-    bR = atanh(sqrt(0.5)) / (KR - Ks(end));
-    bL = -atanh(sqrt(0.5)) / (Ks(1) - KL);
-
-    aR = spline_slope_right / bR;
-    aL = -spline_slope_left / bL;
-
-    % Store computed data in the curve structure
-    curve.Ks = Ks;
-    curve.vols = vols;
-    curve.pp = pp;
+    curve.pp = pp; 
     curve.aL = aL;
     curve.bL = bL;
     curve.aR = aR;
     curve.bR = bR;
-    curve.T = T;
+    curve.K1 = strikes(1);
+    curve.KN = strikes(end);
+    curve.vol1 = vols(1);
+    curve.volN = vols(end);
+end
+
+function checkConvexArbitrage(calls, strikes) 
+     
+    for i = 2:length(strikes) - 1
+         
+        slope_left = (calls(i) - calls(i-1)) / (strikes(i) - strikes(i-1));
+        slope_right = (calls(i+1) - calls(i)) / (strikes(i+1) - strikes(i));
+        
+        if slope_left > slope_right
+            error('ErrorId:arbitrageDetected',['Arbitrage opportunity detected between strikes ', num2str(strikes(i-1)), ', ', ...
+                   num2str(strikes(i)), ' and ', num2str(strikes(i+1)), '.']);
+        end
+    end
+   
 end
